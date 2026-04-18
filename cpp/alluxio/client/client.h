@@ -76,13 +76,20 @@ struct AlluxioClient : AlluxioClientBase
     // followRedirects=NEVER so we can read the 307 Location header.
     std::shared_ptr<Aws::Http::HttpClient> _probe_http;
 
-    // worker endpoint (e.g. "http://10.0.0.5:29998") -> CRT client
-    std::unordered_map<std::string, std::shared_ptr<Aws::S3Crt::S3CrtClient>> _worker_clients;
-
-    // "bucket/path" -> CRT client (shortcut to the worker that owns this file)
+    // Per-instance cache: "bucket/path" -> CRT client (shortcut to the worker
+    // that owns this file). Stays per-instance because file ownership may
+    // differ per caller in exotic setups.
     std::unordered_map<std::string, std::shared_ptr<Aws::S3Crt::S3CrtClient>> _file_routes;
 
     std::mutex _routing_mutex;
+
+    // PROCESS-WIDE cache: worker endpoint (e.g. "http://10.0.0.5:29998")
+    // -> CRT client. Shared across all AlluxioClient instances in the
+    // process so constructing an S3CrtClient (which re-parses the system
+    // CA bundle every time — hot spot in profiling) happens once per
+    // unique endpoint, not once per AlluxioClient × endpoint.
+    static std::unordered_map<std::string, std::shared_ptr<Aws::S3Crt::S3CrtClient>> _shared_worker_clients;
+    static std::mutex _shared_worker_clients_mutex;
 
     // queue of asynchronous responses
     using Responder = common::SharedQueue<common::backend_api::Response>;

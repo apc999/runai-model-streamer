@@ -172,12 +172,21 @@ AlluxioClient::AlluxioClient(const common::backend_api::ObjectClientConfig_t & c
     LOG(DEBUG) << "Alluxio probe HTTP client created";
 }
 
+// Process-wide cache definitions.
+std::unordered_map<std::string, std::shared_ptr<Aws::S3Crt::S3CrtClient>>
+    AlluxioClient::_shared_worker_clients;
+std::mutex AlluxioClient::_shared_worker_clients_mutex;
+
 std::shared_ptr<Aws::S3Crt::S3CrtClient>
 AlluxioClient::get_or_create_worker_client(const std::string& endpoint)
 {
-    // Caller holds _routing_mutex; do not lock here.
-    auto it = _worker_clients.find(endpoint);
-    if (it != _worker_clients.end()) return it->second;
+    // Process-wide cache — every S3CrtClient constructor re-parses the
+    // system CA bundle (X509 / RSA / EC decode + BN math), which is the
+    // dominant hot path observed in perf profiling. Sharing across all
+    // AlluxioClient instances eliminates the redundant constructions.
+    std::lock_guard<std::mutex> g(_shared_worker_clients_mutex);
+    auto it = _shared_worker_clients.find(endpoint);
+    if (it != _shared_worker_clients.end()) return it->second;
 
     Aws::S3Crt::ClientConfiguration cfg = _client_config.config;
     cfg.endpointOverride = endpoint;
@@ -192,7 +201,7 @@ AlluxioClient::get_or_create_worker_client(const std::string& endpoint)
         client = std::make_shared<Aws::S3Crt::S3CrtClient>(*_client_credentials, cfg);
     }
     LOG(DEBUG) << "Alluxio worker CRT client created for " << endpoint;
-    _worker_clients.emplace(endpoint, client);
+    _shared_worker_clients.emplace(endpoint, client);
     return client;
 }
 
