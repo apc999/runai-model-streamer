@@ -210,7 +210,7 @@ AlluxioClient::resolve_worker_client(const common::s3::StorageUri& uri)
     if (!_endpoint.has_value())
     {
         LOG(ERROR) << "Alluxio backend requires an endpoint URL (no Gateway to probe)";
-        throw common::Exception(common::ResponseCode::InvalidParameterValue);
+        throw common::Exception(common::ResponseCode::InvalidParameterError);
     }
 
     std::string probe_url = _endpoint.value() + "/" + key;
