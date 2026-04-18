@@ -161,8 +161,10 @@ AlluxioClient::AlluxioClient(const common::backend_api::ObjectClientConfig_t & c
     // be NEVER — otherwise we never see the 307 response.
     Aws::Client::ClientConfiguration probe_cfg;
     probe_cfg.followRedirects = Aws::Client::FollowRedirectsPolicy::NEVER;
-    probe_cfg.requestTimeoutMs = utils::getenv<long>("RUNAI_STREAMER_ALLUXIO_PROBE_TIMEOUT_MS", 5000);
-    probe_cfg.connectTimeoutMs = utils::getenv<long>("RUNAI_STREAMER_ALLUXIO_PROBE_CONNECT_TIMEOUT_MS", 2000);
+    probe_cfg.requestTimeoutMs = static_cast<long>(
+        utils::getenv<unsigned long>("RUNAI_STREAMER_ALLUXIO_PROBE_TIMEOUT_MS", 5000));
+    probe_cfg.connectTimeoutMs = static_cast<long>(
+        utils::getenv<unsigned long>("RUNAI_STREAMER_ALLUXIO_PROBE_CONNECT_TIMEOUT_MS", 2000));
     probe_cfg.maxConnections = 2;
     probe_cfg.verifySSL = _client_config.config.verifySSL;
     probe_cfg.caFile = _client_config.config.caFile;
