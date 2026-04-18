@@ -7,22 +7,34 @@ import fnmatch
 GCS_PROTOCOL_PREFIX = "gs://"
 S3_PROTOCOL_PREFIX = "s3://"
 AZURE_PROTOCOL_PREFIX = "az://"
+ALLUXIO_PROTOCOL_PREFIX = "alluxio://"
 DEFAULT_GCS_ENDPOINT_URL = "https://storage.googleapis.com"
 AWS_ENDPOINT_URL_ENV = "AWS_ENDPOINT_URL"
 AWS_EC2_METADATA_DISABLED_ENV = "AWS_EC2_METADATA_DISABLED"
 DEFAULT_AWS_EC2_METADATA_DISABLED = "true"
 
 def get_s3_credentials_module():
-    s3_module_name = "runai_model_streamer_s3"
-    s3_credentials_module_name = "runai_model_streamer_s3.credentials.credentials"
-    
-    return get_module(s3_module_name, s3_credentials_module_name)
+    # Prefer the S3 plugin; fall back to the Alluxio plugin which ships the
+    # same credentials/files plumbing so customers only needing alluxio:// URIs
+    # do not have to install both wheels.
+    for main, mod in (
+        ("runai_model_streamer_s3", "runai_model_streamer_s3.credentials.credentials"),
+        ("runai_model_streamer_alluxio", "runai_model_streamer_alluxio.credentials.credentials"),
+    ):
+        found = get_module(main, mod)
+        if found is not None:
+            return found
+    return None
 
 def get_s3_files_module():
-    s3_module_name = "runai_model_streamer_s3"
-    s3_files_module_name = "runai_model_streamer_s3.files.files"
-    
-    return get_module(s3_module_name, s3_files_module_name)
+    for main, mod in (
+        ("runai_model_streamer_s3", "runai_model_streamer_s3.files.files"),
+        ("runai_model_streamer_alluxio", "runai_model_streamer_alluxio.files.files"),
+    ):
+        found = get_module(main, mod)
+        if found is not None:
+            return found
+    return None
 
 def get_gcs_files_module():
     gcs_module_name = "runai_model_streamer_gcs"
@@ -89,6 +101,15 @@ def is_azure_path(path: str) -> bool:
     :return: True if it's an Azure path, False otherwise.
     """
     return path.startswith(AZURE_PROTOCOL_PREFIX)
+
+def is_alluxio_path(path: str) -> bool:
+    """
+    Checks if the given string is an Alluxio path.
+
+    :param path: The string to check.
+    :return: True if it's an Alluxio path, False otherwise.
+    """
+    return path.startswith(ALLUXIO_PROTOCOL_PREFIX)
 
 def s3_glob(path: str, allow_pattern: Optional[List[str]] = None, s3_credentials : Optional[S3Credentials] = None) -> List[str]:
     """

@@ -16,6 +16,7 @@ struct StorageUri
 
     bool is_gcs() const;
     bool is_azure() const;
+    bool is_alluxio() const;
 };
 
 struct StorageUri_C

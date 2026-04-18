@@ -18,6 +18,7 @@ from runai_model_streamer.s3_utils.s3_utils import (
     is_s3_path,
     is_gs_path,
     is_azure_path,
+    is_alluxio_path,
     s3_glob,
     s3_pull_files,
     gcs_glob,
@@ -33,7 +34,7 @@ def list_safetensors(path: str, s3_credentials : Optional[S3Credentials] = None)
     List all safetensors files in the given path.
     This function is not recursive.
     """
-    if is_s3_path(path):
+    if is_s3_path(path) or is_alluxio_path(path):
         files = s3_glob(path, [SAFETENSORS_PATTERN], s3_credentials)
     elif is_gs_path(path):
         files = gcs_glob(path, [SAFETENSORS_PATTERN])
@@ -53,7 +54,7 @@ def pull_files(model_path: str,
     Pull all safetensors files in the given path.
     This function is recursive.
     """
-    if is_s3_path(model_path):
+    if is_s3_path(model_path) or is_alluxio_path(model_path):
         return s3_pull_files(model_path, dst, allow_pattern, ignore_pattern, s3_credentials)
     if is_gs_path(model_path):
         return gcs_pull_files(model_path, dst, allow_pattern, ignore_pattern)
@@ -101,10 +102,10 @@ class ObjectStorageModel:
         dst: str,
         s3_credentials: Optional[S3Credentials] = None,
     ) -> None:
-        if not (is_s3_path(model_path) or is_gs_path(model_path) or is_azure_path(model_path)):
+        if not (is_s3_path(model_path) or is_gs_path(model_path) or is_azure_path(model_path) or is_alluxio_path(model_path)):
             raise ValueError(
                 f"model_path {model_path!r} is not a supported object storage path "
-                "(expected s3://, gs://, or az://)"
+                "(expected s3://, gs://, az://, or alluxio://)"
             )
         self.dir = dst.rstrip("/") or "/"
         self._model_path = model_path if model_path.endswith("/") else model_path + "/"

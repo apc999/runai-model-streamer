@@ -10,10 +10,11 @@ namespace runai::llm::streamer::common::s3
 
 static const std::string gcsProtocol("gs");
 static const std::string azureProtocol("az");
+static const std::string alluxioProtocol("alluxio");
 
 StorageUri::StorageUri(const std::string & uri) : uri(uri)
 {
-    static const std::regex awsRegex("^(s3|gs|az)://([^/]+)/(.+)$");
+    static const std::regex awsRegex("^(s3|gs|az|alluxio)://([^/]+)/(.+)$");
 
     std::smatch match;
 
@@ -45,6 +46,11 @@ bool StorageUri::is_gcs() const
 bool StorageUri::is_azure() const
 {
     return scheme == azureProtocol;
+}
+
+bool StorageUri::is_alluxio() const
+{
+    return scheme == alluxioProtocol;
 }
 
 StorageUri_C::StorageUri_C(const StorageUri & uri) :

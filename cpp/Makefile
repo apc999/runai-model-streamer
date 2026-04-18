@@ -13,6 +13,9 @@ build:
 		"--config=${ARCH}" && \
 	bazel build azure:libstreamerazure.so \
 		--define USE_SYSTEM_LIBS=${USE_SYSTEM_LIBS} \
+		"--config=${ARCH}" && \
+	bazel build alluxio:libstreameralluxio.so \
+		--define USE_SYSTEM_LIBS=${USE_SYSTEM_LIBS} \
 		"--config=${ARCH}"
 
 # Build Azure library with Azurite testing support (enables AZURE_STORAGE_ACCOUNT_KEY)
