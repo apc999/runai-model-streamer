@@ -291,13 +291,16 @@ common::backend_api::ResponseCode_t AlluxioClient::async_read(const char* path,
                                                               char* destination_buffer,
                                                               common::backend_api::ObjectRequestId_t request_id)
 {
-    if (_responder == nullptr)
     {
-        _responder = std::make_shared<Responder>(1);
-    }
-    else
-    {
-        _responder->increment(1);
+        std::lock_guard<std::mutex> g(_responder_mutex);
+        if (_responder == nullptr)
+        {
+            _responder = std::make_shared<Responder>(1);
+        }
+        else
+        {
+            _responder->increment(1);
+        }
     }
 
     const auto uri = common::s3::StorageUri(path);

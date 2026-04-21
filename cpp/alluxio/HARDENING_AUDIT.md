@@ -6,7 +6,26 @@ does the code raise/abort or hang/silently succeed? **Message** —
 actionable for a user? **State** — any leftover on failure?).
 
 This audit covers the state of the plugin after the shutdown-ordering
-fix (cache into `AlluxioInit`), LRU cache cap, and probe retry.
+fix (cache into `AlluxioInit`), LRU cache cap, probe retry, caller
+contract docs, and `_responder` init-race guard.
+
+## backend_api contract summary (from `common/backend_api/object_storage/object_storage.h`)
+
+- `obj_request_read` — "buffer must remain valid until the completion
+  event for this request indicates the read is finished or has failed"
+- `obj_cancel_all_reads` — "Cancellation is best-effort. Completion
+  events should still be expected for requests that were already in
+  flight or too late to cancel"
+- `obj_remove_client` — no explicit pre-condition on outstanding
+  requests or drain status. **Implicit contract** (inferred from the
+  buffer-lifetime clause above): caller drains all completions before
+  remove.
+
+Framework uses RAII wrappers (`S3ClientWrapper`, and mirror pattern
+for other backends) — one wrapper per caller thread, serialized
+request issuance per wrapper. Cross-thread sharing of the same
+`ObjectClientHandle_t` is not a usage pattern the framework exhibits
+today, but the spec doesn't forbid it.
 
 ---
 
@@ -48,29 +67,85 @@ fix (cache into `AlluxioInit`), LRU cache cap, and probe retry.
 
 ## Summary of gaps to open as tickets
 
-After this pass the remaining items (by priority):
+After this pass (and the double-check that revised #4 / #8 / #18):
 
 **P0 — correctness**
-- #4: `async_read_response` hangs forever if CRT callback is lost → add `pop_for` to `SharedQueue` (separate PR, touches all backends)
-- #8, #15: caller-buffer lifetime UAF — at minimum documented; real fix needs API change
-- #18: `obj_remove_client` race — lock or document
+
+- **#4** `async_read_response` hangs forever if CRT callback is lost.
+  **Revised scope**: adding `pop_for` alone is insufficient. Full fix
+  is a **3-piece package** and should land as one PR:
+    - (a) `SharedQueue::pop_for(duration)` + `Semaphore::wait_for` —
+      ~20 LOC, additive, backward-compatible (touches multi-backend
+      shared util).
+    - (b) `AlluxioClient::stop()` also calls
+      `worker_client->DisableRequestProcessing()` on involved CRT
+      clients — prevents NEW chunks from being issued on that client.
+      (True in-flight cancellation is a CRT limitation: the public
+      SDK has no per-request cancel; `aws_s3_meta_request_cancel()`
+      lives at aws-c-s3 layer and isn't plumbed.)
+    - (c) New `drain()` method that blocks until the in-flight
+      counter on the shared responder reaches zero, to be called
+      after `stop()` before safe destruction.
+  Rationale: with (a) only, a caller that times out and destroys the
+  client will still have CRT callbacks firing into freed memory. The
+  three pieces together give a safe "timeout → cancel → drain →
+  destroy" recovery loop.
+
+- **#8/#15** caller-buffer lifetime UAF.
+  **Revised scope**: this is not an independent row; it's a
+  consequence of #18. In the normal runai RAII flow the framework
+  drains completions before destructing the wrapper, so the buffer
+  outlives every CRT callback that writes to it. The only paths to a
+  real UAF are (a) a bug in the framework's drain loop (out of our
+  scope) or (b) the #18 race below. Action items:
+    - Keep the caller-contract documentation added in `client.h`.
+    - Add a `~AlluxioClient` DCHECK that the responder is empty and
+      `_running==0`; on violation, `LOG(FATAL)` so the use-after-free
+      becomes a visible crash at destruction instead of silent data
+      corruption later.
+
+- **#18** `obj_remove_client` race.
+  **Revised scope**: `ClientMgr::push/pop` is **already mutex-protected**
+  — the lock covers the pool's data structure integrity, not the
+  in-flight safety of the client instance. The real race is:
+    Two concurrent `async_read` calls on the same `AlluxioClient*`.
+  Static reading of `client.cc:294-301` (the lazy `_responder` init)
+  confirms the race: two threads read `_responder==nullptr`, both
+  allocate a fresh `Responder`, the second assignment orphans the
+  first. Captured-by-value CRT callbacks then push into a mix of
+  alive and orphaned responders; `async_read_response()` pops from
+  whatever `_responder` ended up winning, with a counter out of sync.
+  Not triggered by today's framework (single-thread per wrapper), but
+  demonstrable by construction. **Done in this round**: guarded the
+  lazy init with `_responder_mutex` (minimal cost, removes the
+  correctness footgun). Remaining defensive work:
+    - Outstanding-request counter in `AlluxioClient`; `stop()` blocks
+      until it reaches zero (couples naturally with the drain path
+      from #4).
+    - Documentation on `obj_remove_client` that the caller must not
+      hold outstanding requests on the handle being removed.
 
 **P1 — diagnostics**
-- #1: `Aws::InitAPI` failure undetected — add smoke check
-- #3: `S3CrtClient` ctor failure — wrap with endpoint context
-- #11: opaque probe failure — post-mortem endpoint probe (à la monkey-patch commit 161d936)
+- #1: `Aws::InitAPI` failure undetected — add smoke check.
+- #3: `S3CrtClient` ctor failure — wrap with endpoint context.
+- #11: opaque probe failure — post-mortem endpoint probe (à la
+  monkey-patch commit 161d936).
 
 **P2 — nice to have**
-- #7: double-construct on simultaneous miss — double-check inside lock
+- #7: double-construct on simultaneous miss — double-check inside
+  lock.
 
 ---
 
 ## Items addressed in this round
 
-- **#2** shutdown ordering — fix committed, reproducer added
-- **#5** cache unbounded growth — LRU cap with env knob
-- **#10** probe single-shot — 2-attempt retry
-- **#8/#9/#16** caller contracts — documented in `client.h`
+- **#2** shutdown ordering — fix committed, reproducer added.
+- **#5** cache unbounded growth — LRU cap with env knob.
+- **#10** probe single-shot — 2-attempt retry.
+- **#8/#9/#16** caller contracts — documented in `client.h`.
+- **#18 (partial)** concurrent `async_read` on the same client now
+  guarded by `_responder_mutex`; full fix still pending `drain()` +
+  outstanding-counter.
 
 ## Meta observations
 

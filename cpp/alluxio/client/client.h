@@ -113,9 +113,20 @@ struct AlluxioClient : AlluxioClientBase
 
     std::mutex _routing_mutex;
 
-    // queue of asynchronous responses
+    // queue of asynchronous responses.
+    //
+    // THREAD-SAFETY: per backend_api contract, runai framework uses one
+    // S3ClientWrapper per caller and serializes requests per wrapper;
+    // concurrent async_read on the same AlluxioClient is not expected.
+    // We still guard the lazy-init of _responder with _responder_mutex
+    // defensively — without it, two concurrent first calls each would
+    // read nullptr, both allocate a fresh Responder, and the second
+    // assignment would leak the first one's bookkeeping (captured CRT
+    // callbacks may push into an orphaned Responder, and the counter on
+    // the survivor is out of sync with in-flight chunks).
     using Responder = common::SharedQueue<common::backend_api::Response>;
     std::shared_ptr<Responder> _responder;
+    std::mutex _responder_mutex;
 };
 
 }; //namespace runai::llm::streamer::impl::alluxio
