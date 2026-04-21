@@ -4,6 +4,7 @@
 #include <aws/core/auth/AWSCredentialsProvider.h>
 #include <aws/s3-crt/S3CrtClient.h>
 
+#include <list>
 #include <memory>
 #include <mutex>
 #include <string>
@@ -61,9 +62,24 @@ struct AlluxioInit
     Aws::SDKOptions options;
 
  private:
-    std::unordered_map<std::string, std::shared_ptr<Aws::S3Crt::S3CrtClient>>
-        _worker_clients;
+    // LRU cache of S3CrtClient by endpoint. Bounded at _capacity entries
+    // so long-running processes with pod reshuffles don't accumulate
+    // dead endpoints forever (each CRT client owns ~80 threads and
+    // non-trivial memory). Default 64 endpoints; override via
+    // RUNAI_STREAMER_ALLUXIO_CLIENT_CACHE_MAX.
+    //
+    // Implementation: std::list holds (endpoint, client) in LRU order
+    // (front = most-recently-used); unordered_map points to list iters
+    // for O(1) lookup. On hit, move to front. On miss with size ==
+    // capacity, drop back entry (= LRU).
+    using CacheEntry =
+        std::pair<std::string, std::shared_ptr<Aws::S3Crt::S3CrtClient>>;
+    using CacheList = std::list<CacheEntry>;
+
+    CacheList _worker_clients_lru;
+    std::unordered_map<std::string, CacheList::iterator> _worker_clients_idx;
     std::mutex _worker_clients_mutex;
+    size_t _capacity;
 };
 
 }; //namespace runai::llm::streamer::impl::alluxio

@@ -9,6 +9,8 @@ namespace runai::llm::streamer::impl::alluxio
 {
 
 AlluxioInit::AlluxioInit()
+    : _capacity(utils::getenv<unsigned long>(
+          "RUNAI_STREAMER_ALLUXIO_CLIENT_CACHE_MAX", 64))
 {
     options.httpOptions.installSigPipeHandler = true;
     auto trace_aws = utils::getenv<bool>("RUNAI_STREAMER_ALLUXIO_TRACE", false);
@@ -32,7 +34,8 @@ AlluxioInit::~AlluxioInit()
         // the runtime can no longer schedule.
         {
             std::lock_guard<std::mutex> g(_worker_clients_mutex);
-            _worker_clients.clear();
+            _worker_clients_lru.clear();
+            _worker_clients_idx.clear();
         }
         Aws::ShutdownAPI(options);
     }
@@ -58,8 +61,27 @@ AlluxioInit::get_or_create_worker_client(
     const Aws::Auth::AWSCredentials* creds)
 {
     std::lock_guard<std::mutex> g(_worker_clients_mutex);
-    auto it = _worker_clients.find(endpoint);
-    if (it != _worker_clients.end()) return it->second;
+
+    // Cache hit: move to front (most-recently-used).
+    auto hit = _worker_clients_idx.find(endpoint);
+    if (hit != _worker_clients_idx.end())
+    {
+        _worker_clients_lru.splice(
+            _worker_clients_lru.begin(), _worker_clients_lru, hit->second);
+        return hit->second->second;
+    }
+
+    // Miss: evict LRU if at capacity. Eviction just drops the shared_ptr;
+    // callers holding their own copies (e.g. via AlluxioClient::_file_routes)
+    // keep the CRT client alive until their refs drop.
+    if (_worker_clients_lru.size() >= _capacity)
+    {
+        auto& back = _worker_clients_lru.back();
+        LOG(DEBUG) << "Alluxio worker CRT client cache at capacity "
+                   << _capacity << "; evicting LRU endpoint " << back.first;
+        _worker_clients_idx.erase(back.first);
+        _worker_clients_lru.pop_back();
+    }
 
     Aws::S3Crt::ClientConfiguration cfg = base_cfg;
     cfg.endpointOverride = endpoint;
@@ -74,7 +96,8 @@ AlluxioInit::get_or_create_worker_client(
         client = std::make_shared<Aws::S3Crt::S3CrtClient>(*creds, cfg);
     }
     LOG(DEBUG) << "Alluxio worker CRT client created for " << endpoint;
-    _worker_clients.emplace(endpoint, client);
+    _worker_clients_lru.emplace_front(endpoint, client);
+    _worker_clients_idx.emplace(endpoint, _worker_clients_lru.begin());
     return client;
 }
 

@@ -46,14 +46,46 @@ struct AlluxioClient : AlluxioClientBase
 {
     AlluxioClient(const common::backend_api::ObjectClientConfig_t & config);
 
+    // Issue an asynchronous read. Splits `range` into chunks and fires
+    // N CRT GetObjectAsync requests; each completion pushes into the
+    // shared responder queue.
+    //
+    // CALLER CONTRACT — `destination_buffer`:
+    //   MUST remain valid until the matching `async_read_response()`
+    //   has returned for this `request_id`. The CRT callback writes
+    //   into `destination_buffer` at chunk offsets; the pointer is
+    //   captured by value, NOT by ownership. Freeing / reusing the
+    //   buffer before response arrival -> use-after-write.
+    //
+    //   A single error response is emitted on the FIRST failing chunk
+    //   (via an atomic `is_success->exchange(false)`); chunks already
+    //   in flight still run and may still write into the buffer.
+    //   Callers must keep the buffer alive until they've either seen
+    //   a Success or retained the buffer through the drain of any
+    //   in-flight chunks — there is no guaranteed "stop writing" point
+    //   before the responder's completion.
     common::backend_api::ResponseCode_t async_read(const char* path,
                                                    common::backend_api::ObjectRange_t range,
                                                    char* destination_buffer,
                                                    common::backend_api::ObjectRequestId_t request_id);
 
+    // Blocks until the next chunk-level response is available.
+    // NOTE: there is NO timeout — if the underlying CRT callback is
+    // never invoked (e.g. a CRT-internal bug), this call waits
+    // indefinitely. Upper-layer cancellation is via `stop()`.
+    // TODO: consider a timed variant once `common::SharedQueue`
+    // exposes `pop_for(duration)`.
     common::backend_api::Response async_read_response();
 
-    // Stop sending requests to the object store.
+    // Best-effort abort of future work. Sets a stop flag checked at
+    // chunk-issue boundaries in `async_read`, and cancels the responder
+    // queue so any blocked `async_read_response()` returns promptly.
+    //
+    // NOTE: does NOT cancel CRT requests that were already issued.
+    // In-flight `GetObjectAsync` callbacks will still fire and still
+    // write into their `destination_buffer` — same caller contract as
+    // above. If deterministic in-flight cancellation becomes necessary,
+    // switch to CRT's per-operation cancellation API.
     void stop();
 
     using AlluxioClientBase::verify_credentials;

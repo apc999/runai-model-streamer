@@ -195,20 +195,41 @@ AlluxioClient::resolve_worker_client(const common::s3::StorageUri& uri)
     std::string probe_url = _endpoint.value() + "/" + key;
     LOG(SPAM) << "Alluxio probing " << probe_url;
 
-    auto req = Aws::Http::CreateHttpRequest(
-        Aws::String(probe_url.c_str()),
-        Aws::Http::HttpMethod::HTTP_GET,
-        Aws::Utils::Stream::DefaultResponseStreamFactoryMethod);
-    req->SetHeaderValue("Range", "bytes=0-0");
-
-    auto resp = _probe_http->MakeRequest(req);
-    if (!resp)
+    // 2-attempt probe. Gateway servers commonly close the keep-alive
+    // connection right after issuing a 307; the next request on the
+    // reused HttpClient can see a transport error even though the
+    // Gateway itself is healthy. One retry resolves this cleanly.
+    std::shared_ptr<Aws::Http::HttpResponse> resp;
+    int code = 0;
+    for (int attempt = 0; attempt < 2; ++attempt)
     {
-        LOG(ERROR) << "Alluxio probe returned null response for " << probe_url;
+        auto req = Aws::Http::CreateHttpRequest(
+            Aws::String(probe_url.c_str()),
+            Aws::Http::HttpMethod::HTTP_GET,
+            Aws::Utils::Stream::DefaultResponseStreamFactoryMethod);
+        req->SetHeaderValue("Range", "bytes=0-0");
+        resp = _probe_http->MakeRequest(req);
+
+        // A null response OR a transport-failure code means the client
+        // never got bytes back — retry. Any parseable HTTP status (2xx,
+        // 3xx, 4xx, 5xx) is a definitive answer — break out.
+        if (resp)
+        {
+            code = static_cast<int>(resp->GetResponseCode());
+            if (code >= 100) break;
+        }
+        if (attempt == 0)
+        {
+            LOG(DEBUG) << "Alluxio probe transient failure for " << probe_url
+                       << "; retrying";
+        }
+    }
+    if (!resp || code < 100)
+    {
+        LOG(ERROR) << "Alluxio probe returned null/transport-error response "
+                   << "for " << probe_url << " after retry";
         throw common::Exception(common::ResponseCode::FileAccessError);
     }
-
-    const auto code = static_cast<int>(resp->GetResponseCode());
     std::string target_endpoint;
 
     if (code == 301 || code == 302 || code == 307 || code == 308)
