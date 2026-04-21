@@ -40,9 +40,11 @@ common::backend_api::ResponseCode_t obj_open_backend(common::backend_api::Object
             LOG_IF(INFO, (chunk_size < min_chunk_bytesize)) << "Minimal chunk size to read is 5 MiB";
         }
 
-        // AlluxioInit shutdown happens on process exit; attempting it earlier
-        // causes segfaults when trace logs are enabled.
-        static AlluxioInit alluxio_init;
+        // Warm up the AlluxioInit singleton. It owns both the AWS SDK
+        // runtime (Aws::InitAPI/ShutdownAPI) and the process-wide CRT
+        // client cache; the destructor tears them down in a deterministic
+        // order so CRT client destructors never run post-ShutdownAPI.
+        AlluxioInit::instance();
     }
     catch(const std::exception & e)
     {

@@ -61,13 +61,11 @@ struct AlluxioClient : AlluxioClientBase
  private:
     // Resolve the owner worker for this file via a 1-byte Range GET to the
     // Gateway endpoint. Caches the result; subsequent calls for the same file
-    // return immediately.
+    // return immediately. The per-endpoint CRT client cache is owned by
+    // AlluxioInit (shared process-wide); see alluxio_init.h for the ordering
+    // rationale between that cache and Aws::ShutdownAPI.
     std::shared_ptr<Aws::S3Crt::S3CrtClient>
         resolve_worker_client(const common::s3::StorageUri& uri);
-
-    // Return the CRT client for a given worker endpoint, creating it if needed.
-    std::shared_ptr<Aws::S3Crt::S3CrtClient>
-        get_or_create_worker_client(const std::string& endpoint);
 
     std::atomic<bool> _stop;
     ClientConfiguration _client_config;
@@ -82,14 +80,6 @@ struct AlluxioClient : AlluxioClientBase
     std::unordered_map<std::string, std::shared_ptr<Aws::S3Crt::S3CrtClient>> _file_routes;
 
     std::mutex _routing_mutex;
-
-    // PROCESS-WIDE cache: worker endpoint (e.g. "http://10.0.0.5:29998")
-    // -> CRT client. Shared across all AlluxioClient instances in the
-    // process so constructing an S3CrtClient (which re-parses the system
-    // CA bundle every time — hot spot in profiling) happens once per
-    // unique endpoint, not once per AlluxioClient × endpoint.
-    static std::unordered_map<std::string, std::shared_ptr<Aws::S3Crt::S3CrtClient>> _shared_worker_clients;
-    static std::mutex _shared_worker_clients_mutex;
 
     // queue of asynchronous responses
     using Responder = common::SharedQueue<common::backend_api::Response>;

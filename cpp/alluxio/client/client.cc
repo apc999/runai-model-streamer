@@ -13,6 +13,7 @@
 #include <optional>
 
 #include "common/backend_api/object_storage/object_storage.h"
+#include "alluxio/alluxio_init/alluxio_init.h"
 #include "alluxio/client/client.h"
 
 #include "common/exception/exception.h"
@@ -172,39 +173,6 @@ AlluxioClient::AlluxioClient(const common::backend_api::ObjectClientConfig_t & c
     LOG(DEBUG) << "Alluxio probe HTTP client created";
 }
 
-// Process-wide cache definitions.
-std::unordered_map<std::string, std::shared_ptr<Aws::S3Crt::S3CrtClient>>
-    AlluxioClient::_shared_worker_clients;
-std::mutex AlluxioClient::_shared_worker_clients_mutex;
-
-std::shared_ptr<Aws::S3Crt::S3CrtClient>
-AlluxioClient::get_or_create_worker_client(const std::string& endpoint)
-{
-    // Process-wide cache — every S3CrtClient constructor re-parses the
-    // system CA bundle (X509 / RSA / EC decode + BN math), which is the
-    // dominant hot path observed in perf profiling. Sharing across all
-    // AlluxioClient instances eliminates the redundant constructions.
-    std::lock_guard<std::mutex> g(_shared_worker_clients_mutex);
-    auto it = _shared_worker_clients.find(endpoint);
-    if (it != _shared_worker_clients.end()) return it->second;
-
-    Aws::S3Crt::ClientConfiguration cfg = _client_config.config;
-    cfg.endpointOverride = endpoint;
-
-    std::shared_ptr<Aws::S3Crt::S3CrtClient> client;
-    if (_client_credentials == nullptr)
-    {
-        client = std::make_shared<Aws::S3Crt::S3CrtClient>(cfg);
-    }
-    else
-    {
-        client = std::make_shared<Aws::S3Crt::S3CrtClient>(*_client_credentials, cfg);
-    }
-    LOG(DEBUG) << "Alluxio worker CRT client created for " << endpoint;
-    _shared_worker_clients.emplace(endpoint, client);
-    return client;
-}
-
 std::shared_ptr<Aws::S3Crt::S3CrtClient>
 AlluxioClient::resolve_worker_client(const common::s3::StorageUri& uri)
 {
@@ -275,7 +243,13 @@ AlluxioClient::resolve_worker_client(const common::s3::StorageUri& uri)
     std::lock_guard<std::mutex> g(_routing_mutex);
     auto it = _file_routes.find(key);
     if (it != _file_routes.end()) return it->second;
-    auto worker_client = get_or_create_worker_client(target_endpoint);
+    // Delegate to the process-wide cache owned by AlluxioInit. Its
+    // destructor clears this cache before Aws::ShutdownAPI runs, so
+    // CRT thread-pool teardown always happens with SDK state live.
+    auto worker_client = AlluxioInit::instance().get_or_create_worker_client(
+        target_endpoint,
+        _client_config.config,
+        _client_credentials.get());
     _file_routes.emplace(key, worker_client);
     return worker_client;
 }
