@@ -1,7 +1,9 @@
-load("//:rules.bzl", "runai_cc_auto_library")
+load("//:rules.bzl", "runai_cc_auto_library", "runai_cc_test")
 
 runai_cc_auto_library(
     name = "client",
+    srcs = ["client.cc"],
+    hdrs = ["client.h"],
     deps = [
         "//alluxio/alluxio_init",
         "//alluxio/client_configuration",
@@ -16,5 +18,14 @@ runai_cc_auto_library(
         "//common/backend_api/object_storage",
         "//utils/env",
         "//utils/fd",
+    ],
+)
+
+runai_cc_test(
+    name = "responder_race_test",
+    srcs = ["responder_race_test.cc"],
+    deps = [
+        ":client",
+        "//alluxio/alluxio_init",
     ],
 )
